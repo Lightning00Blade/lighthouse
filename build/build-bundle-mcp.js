@@ -145,10 +145,6 @@ async function buildBundle(entryPath, distPath) {
   const dynamicModulePaths = [
     ...includedGatherers.map(gatherer => `../gather/gatherers/${gatherer}`),
     ...includedAudits.map(audit => `../audits/${audit}`),
-    '../computed/speedline.js',
-    '../computed/metrics/timing-summary.js',
-    '../computed/entity-classification.js',
-    '../computed/trace-engine-result.js',
   ];
 
   // Add all other audits and gatherers to dynamicModulePaths so they're in the bundledModules map.
@@ -164,9 +160,12 @@ async function buildBundle(entryPath, distPath) {
     }
   });
 
-  const bundledMapEntriesCode = dynamicModulePaths.map(modulePath => {
+  const staticImportsCode = dynamicModulePaths.map((modulePath, index) => {
+    return `import _bundled_${index} from '${modulePath}';`;
+  }).join('\n');
+  const bundledMapEntriesCode = dynamicModulePaths.map((modulePath, index) => {
     const pathNoExt = modulePath.replace('.js', '');
-    return `['${pathNoExt}', import('${modulePath}')]`;
+    return `['${pathNoExt}', {default: _bundled_${index}}]`;
   }).join(',\n');
 
   /** @type {Record<string, string>} */
@@ -271,10 +270,10 @@ async function buildBundle(entryPath, distPath) {
     metafile: true,
     sourcemap: 'linked',
     platform: 'node',
+    mainFields: ['module', 'main'],
     banner: {js: banner},
     lineLimit: 1000,
     keepNames: true,
-    inject: ['./build/process-global.js'],
     legalComments: 'inline',
     alias: {
       'debug': require.resolve('debug/src/browser.js'),
@@ -308,7 +307,9 @@ async function buildBundle(entryPath, distPath) {
         }),
         plugins.partialLoaders.rmGetModuleDirectory,
         plugins.partialLoaders.replaceText({
-          '/* BUILD_REPLACE_BUNDLED_MODULES */': `[\n${bundledMapEntriesCode},\n]`,
+          'const bundledModules = new Map(/* BUILD_REPLACE_BUNDLED_MODULES */);':
+            `${staticImportsCode}\n` +
+            `const bundledModules = new Map([\n${bundledMapEntriesCode},\n]);`,
           /** @param {string} id */
           'import.meta': (id) => `{url: '${path.relative(LH_ROOT, id)}'}`,
         }),
