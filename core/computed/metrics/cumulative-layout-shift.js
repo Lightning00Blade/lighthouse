@@ -193,7 +193,7 @@ class CumulativeLayoutShift {
     //       See comment in `getLayoutShiftEvents`. We need to upstream this.
     let newEngineResult;
     let newEngineResultDiffered = false;
-    let tryNewTraceEngine = true;
+    let tryNewTraceEngine = Boolean(TraceEngine.TraceProcessor);
     if (allFrameShiftEvents.some(e => e.event.args.data?.had_recent_input)) {
       tryNewTraceEngine = false;
     }

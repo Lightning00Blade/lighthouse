@@ -280,41 +280,51 @@ function umd(moduleName) {
 }
 
 /**
- * @param {string} id
  * @param {string} shimDir
  * @return {string}
  */
-function generateAuditShim(id, shimDir) {
+function generateAuditShimHelper(shimDir) {
   const auditPath = path.resolve(LH_ROOT, 'core/audits/audit.js');
   let relativePath = path.relative(shimDir, auditPath);
   if (!relativePath.startsWith('.')) relativePath = './' + relativePath;
 
   return `
 import {Audit} from '${relativePath}';
-class ShimAudit extends Audit {
-  static get meta() {
-    return {
-      id: '${id}',
-      title: 'Shim Audit',
-      description: 'This audit was filtered out and is not available in this bundle.',
-      scoreDisplayMode: Audit.SCORING_MODES.NOT_APPLICABLE,
-      requiredArtifacts: [],
-    };
-  }
-  static audit() {
-    return {score: null, scoreDisplayMode: Audit.SCORING_MODES.NOT_APPLICABLE};
-  }
+export function createAuditShim(id) {
+  return class ShimAudit extends Audit {
+    static get meta() {
+      return {
+        id,
+        title: 'Shim Audit',
+        description: 'This audit was filtered out and is not available in this bundle.',
+        scoreDisplayMode: Audit.SCORING_MODES.NOT_APPLICABLE,
+        requiredArtifacts: [],
+      };
+    }
+    static audit() {
+      return {score: null, scoreDisplayMode: Audit.SCORING_MODES.NOT_APPLICABLE};
+    }
+  };
 }
-export default ShimAudit;
 `;
 }
 
 /**
  * @param {string} id
+ * @return {string}
+ */
+function generateAuditShim(id) {
+  return `
+import {createAuditShim} from 'lh-audit-shim-helper';
+export default createAuditShim('${id}');
+`;
+}
+
+/**
  * @param {string} shimDir
  * @return {string}
  */
-function generateGathererShim(id, shimDir) {
+function generateGathererShim(shimDir) {
   const gathererPath = path.resolve(LH_ROOT, 'core/gather/base-gatherer.js');
   let relativePath = path.relative(shimDir, gathererPath);
   if (!relativePath.startsWith('.')) relativePath = './' + relativePath;
@@ -341,10 +351,21 @@ export default ShimGatherer;
  */
 function lighthouseShimPlugin(options) {
   const {includedAudits = [], includedGatherers = []} = options;
+  const auditShimHelperPath = path.resolve(LH_ROOT, 'core/audits/shim-audit-helper.js');
+  const gathererShimPath = path.resolve(LH_ROOT, 'core/gather/gatherers/shim-gatherer.js');
 
   return {
     name: 'lh-shim',
     setup(build) {
+      build.onResolve({filter: /^lh-audit-shim-helper$/}, () => {
+        return {path: auditShimHelperPath, namespace: 'lh-audit-shim-helper'};
+      });
+
+      build.onLoad({filter: /.*/, namespace: 'lh-audit-shim-helper'}, args => {
+        const shimDir = path.dirname(args.path);
+        return {contents: generateAuditShimHelper(shimDir), loader: 'js', resolveDir: shimDir};
+      });
+
       // Intercept audits
       build.onResolve({filter: /audits\/.*\.js$/}, args => {
         if (args.path.endsWith('/audit.js') || args.path === './audit.js') return;
@@ -359,7 +380,7 @@ function lighthouseShimPlugin(options) {
       build.onLoad({filter: /.*/, namespace: 'lh-audit-shim'}, args => {
         const id = path.basename(args.path, '.js');
         const shimDir = path.dirname(args.path);
-        return {contents: generateAuditShim(id, shimDir), loader: 'js', resolveDir: shimDir};
+        return {contents: generateAuditShim(id), loader: 'js', resolveDir: shimDir};
       });
 
       // Intercept gatherers
@@ -368,17 +389,45 @@ function lighthouseShimPlugin(options) {
         const isIncluded = includedGatherers.some(p => args.path.includes(p));
         if (isIncluded) return;
 
-        const absolutePath = path.resolve(args.resolveDir, args.path);
-        return {path: absolutePath, namespace: 'lh-gatherer-shim'};
+        return {path: gathererShimPath, namespace: 'lh-gatherer-shim'};
       });
 
       build.onLoad({filter: /.*/, namespace: 'lh-gatherer-shim'}, args => {
-        const id = path.basename(args.path, '.js');
         const shimDir = path.dirname(args.path);
-        return {contents: generateGathererShim(id, shimDir), loader: 'js', resolveDir: shimDir};
+        return {contents: generateGathererShim(shimDir), loader: 'js', resolveDir: shimDir};
       });
     },
   };
+}
+
+/**
+ * @param {string|{url?: string}|undefined} rawUrl
+ * @return {string}
+ */
+function normalizeRepoUrl(rawUrl) {
+  let url = rawUrl && typeof rawUrl === 'object' ? rawUrl.url : rawUrl;
+  if (!url || typeof url !== 'string') return '';
+
+  url = url.replace(/^git\+/, '').replace(/\.git$/, '');
+  if (url.startsWith('github:')) {
+    url = `https://github.com/${url.substring(7)}`;
+  } else if (url.startsWith('gitlab:')) {
+    url = `https://gitlab.com/${url.substring(7)}`;
+  } else if (url.startsWith('bitbucket:')) {
+    url = `https://bitbucket.org/${url.substring(10)}`;
+  } else if (url.startsWith('ssh://git@github.com/')) {
+    url = `https://github.com/${url.substring('ssh://git@github.com/'.length)}`;
+  } else if (url.startsWith('git://github.com/')) {
+    url = `https://github.com/${url.substring('git://github.com/'.length)}`;
+  } else if (url.startsWith('git@github.com:')) {
+    url = `https://github.com/${url.substring('git@github.com:'.length)}`;
+  } else if (!url.startsWith('http')) {
+    const parts = url.split('/');
+    if (parts.length === 2) {
+      url = `https://github.com/${url}`;
+    }
+  }
+  return url;
 }
 
 /**
@@ -479,29 +528,7 @@ function postprocess(options = {}) {
                 }
 
                 if (pkgJson.repository) {
-                  let url = typeof pkgJson.repository === 'string' ? pkgJson.repository : pkgJson.repository.url;
-                  if (url) {
-                    url = url.replace(/^git\+/, '').replace(/\.git$/, '');
-                    if (url.startsWith('github:')) {
-                      url = `https://github.com/${url.substring(7)}`;
-                    } else if (url.startsWith('gitlab:')) {
-                      url = `https://gitlab.com/${url.substring(7)}`;
-                    } else if (url.startsWith('bitbucket:')) {
-                      url = `https://bitbucket.org/${url.substring(10)}`;
-                    } else if (url.startsWith('ssh://git@github.com/')) {
-                      url = `https://github.com/${url.substring('ssh://git@github.com/'.length)}`;
-                    } else if (url.startsWith('git://github.com/')) {
-                      url = `https://github.com/${url.substring('git://github.com/'.length)}`;
-                    } else if (url.startsWith('git@github.com:')) {
-                      url = `https://github.com/${url.substring('git@github.com:'.length)}`;
-                    } else if (!url.startsWith('http')) {
-                      const parts = url.split('/');
-                      if (parts.length === 2) {
-                        url = `https://github.com/${url}`;
-                      }
-                    }
-                    repoUrl = url;
-                  }
+                  repoUrl = normalizeRepoUrl(pkgJson.repository);
                 }
 
                 const pkgJsonDir = path.dirname(pkgJsonPath);
@@ -548,5 +575,6 @@ export {
   ignoreBuiltins,
   umd,
   lighthouseShimPlugin,
+  normalizeRepoUrl,
   postprocess,
 };

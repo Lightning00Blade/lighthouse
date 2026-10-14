@@ -199,7 +199,20 @@ async function buildBundle(entryPath, distPath) {
     // Don't include locales in DevTools.
     [`${LH_ROOT}/shared/localization/locales.js`]: 'export const locales = {};',
     // Don't bundle third-party-web (CDT provides its own copy).
+    'third-party-web': 'export default {};',
     'third-party-web/nostats-subset.js': 'export default {};',
+    // Don't bundle stack packs (not used by MCP categories).
+    [`${LH_ROOT}/core/lib/stack-packs.js`]: 'export function getStackPacks() { return []; }',
+    'lighthouse-stack-packs': 'export default [];',
+    // Don't bundle trace_engine (not used by MCP categories).
+    '@paulirish/trace_engine': `
+      export const Processor = {};
+      export const Handlers = {};
+      export const Insights = {};
+      export const Helpers = {};
+      export const Types = {};
+      export const LanternComputationData = {};
+    `,
   };
 
   const modulesToIgnore = [
@@ -275,7 +288,7 @@ async function buildBundle(entryPath, distPath) {
     lineLimit: 1000,
     keepNames: true,
     inject: ['./build/process-global.js'],
-    legalComments: 'inline',
+    legalComments: 'none',
     alias: {
       'debug': require.resolve('debug/src/browser.js'),
       'lighthouse-logger': require.resolve('../lighthouse-logger/index.js'),
@@ -313,7 +326,7 @@ async function buildBundle(entryPath, distPath) {
           'import.meta': (id) => `{url: '${path.relative(LH_ROOT, id)}'}`,
         }),
       ]),
-      plugins.postprocess(),
+      plugins.postprocess({removeExtraLicenses: true}),
     ],
   });
 
@@ -395,32 +408,8 @@ function generateThirdPartyNotices({metafile, sources, inlinedFiles, distDir}) {
     }
     const parts = [];
     parts.push(`Name: ${dependency.name ?? 'N/A'}`);
-    let url = dependency.homepage ?? dependency.repository;
-    if (url && typeof url === 'object') {
-      url = url.url;
-    }
-    if (url && typeof url === 'string') {
-      url = url.replace(/^git\+/, '').replace(/\.git$/, '');
-      if (url.startsWith('github:')) {
-        url = `https://github.com/${url.substring(7)}`;
-      } else if (url.startsWith('gitlab:')) {
-        url = `https://gitlab.com/${url.substring(7)}`;
-      } else if (url.startsWith('bitbucket:')) {
-        url = `https://bitbucket.org/${url.substring(10)}`;
-      } else if (url.startsWith('ssh://git@github.com/')) {
-        url = `https://github.com/${url.substring('ssh://git@github.com/'.length)}`;
-      } else if (url.startsWith('git://github.com/')) {
-        url = `https://github.com/${url.substring('git://github.com/'.length)}`;
-      } else if (url.startsWith('git@github.com:')) {
-        url = `https://github.com/${url.substring('git@github.com:'.length)}`;
-      } else if (!url.startsWith('http')) {
-        const parts = url.split('/');
-        if (parts.length === 2) {
-          url = `https://github.com/${url}`;
-        }
-      }
-    }
-    parts.push(`URL: ${url ?? 'N/A'}`);
+    const url = plugins.normalizeRepoUrl(dependency.homepage ?? dependency.repository);
+    parts.push(`URL: ${url || 'N/A'}`);
     parts.push(`Version: ${dependency.version ?? 'N/A'}`);
     parts.push(`License: ${dependency.license ?? 'N/A'}`);
     if (dependency.licenseText) {
